@@ -14,7 +14,8 @@ Architecture:
 """
 
 import json
-import anthropic
+import os
+import requests
 from tools.tool_registry import TOOLS, dispatch_tool
 from agents.tvm_subagent import SYSTEM_PROMPT as TVM_SYSTEM_PROMPT
 
@@ -55,84 +56,40 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
             "error": str | None,
         }
     """
-    # Use the Google API key as the single configured key for this project.
-    # Map `GOOGLE_API_KEY` into `ANTHROPIC_API_KEY` so existing Anthropic client usage
-    # continues to work while the environment exposes only the Google key.
-    google_key = os.getenv("GOOGLE_API_KEY")
-    if not google_key:
-        raise RuntimeError("GOOGLE_API_KEY not set in environment")
-    os.environ["ANTHROPIC_API_KEY"] = google_key
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    # Use the Google Generative API (Gemini / text-bison) directly with a Bearer token.
+    token = os.getenv("GOOGLE_API_KEY")
+    if not token:
+        return {"response": "", "tool_calls": [], "error": "GOOGLE_API_KEY not set"}
 
-    # Route to subagent
-    topic = _classify_question(user_message)
-    system_prompt = TVM_SYSTEM_PROMPT  # expandable: elif topic == "annuity" etc.
-
-    # Build message list
+    system_prompt = TVM_SYSTEM_PROMPT
+    # Build a single prompt text from system + history + user message
     messages = conversation_history + [{"role": "user", "content": user_message}]
+    prompt_parts = ["SYSTEM: " + system_prompt]
+    for m in messages:
+        role = m.get("role", "user").upper()
+        content = m.get("content", "")
+        prompt_parts.append(f"{role}: {content}")
+    prompt_text = "\n\n".join(prompt_parts)
 
-    tool_calls_log = []
-    final_response = ""
-    error = None
+    url = "https://generativelanguage.googleapis.com/v1/models/text-bison-001:generate"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "prompt": {"text": prompt_text},
+        "maxOutputTokens": 768,
+        "temperature": 0.2,
+    }
 
     try:
-        for round_num in range(MAX_TOOL_ROUNDS):
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system_prompt,
-                tools=TOOLS,
-                messages=messages,
-            )
-
-            round_text = ""
-            tool_use_blocks = []
-
-            for block in response.content:
-                if block.type == "text":
-                    round_text += block.text
-                elif block.type == "tool_use":
-                    tool_use_blocks.append(block)
-
-            if response.stop_reason == "end_turn":
-                final_response = round_text
-                break
-
-            if response.stop_reason == "tool_use" and tool_use_blocks:
-                messages.append({"role": "assistant", "content": response.content})
-
-                tool_results = []
-                for tool_block in tool_use_blocks:
-                    tool_result = dispatch_tool(tool_block.name, tool_block.input)
-                    tool_calls_log.append({
-                        "tool": tool_block.name,
-                        "input": tool_block.input,
-                        "result": json.loads(tool_result),
-                    })
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_block.id,
-                        "content": tool_result,
-                    })
-
-                messages.append({"role": "user", "content": tool_results})
-
-            else:
-                final_response = round_text or "I wasn't able to complete the calculation."
-                break
-
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.status_code != 200:
+            return {"response": "", "tool_calls": [], "error": f"API error {resp.status_code}: {resp.text}"}
+        data = resp.json()
+        # Extract text from first candidate
+        candidates = data.get("candidates") or []
+        if candidates:
+            text = candidates[0].get("output", "").strip()
         else:
-            final_response = "Reached maximum reasoning steps. Please simplify your question."
-
-    except anthropic.APIError as e:
-        error = f"API error: {str(e)}"
-        final_response = "An error occurred while processing your request."
+            text = data.get("output", "") or ""
+        return {"response": text, "tool_calls": [], "error": None}
     except Exception as e:
-        error = f"Unexpected error: {str(e)}"
-        final_response = "An unexpected error occurred."
-
-    return {
-        "response": final_response,
-        "tool_calls": tool_calls_log,
-        "error": error,
-    }
+        return {"response": "", "tool_calls": [], "error": str(e)}

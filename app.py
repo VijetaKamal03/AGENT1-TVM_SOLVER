@@ -8,6 +8,7 @@ import os
 import sys
 
 import streamlit as st
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -206,6 +207,34 @@ def _render_sidebar() -> None:
             st.session_state.tool_logs = {}
             st.rerun()
 
+        # Quick API health-check for deployed secrets
+        if st.button("🔬 API health-check"):
+          token = os.getenv("GOOGLE_API_KEY")
+          try:
+            if not token and hasattr(st, "secrets"):
+              token = st.secrets.get("GOOGLE_API_KEY")
+          except Exception:
+            token = token
+
+          if not token:
+            st.error("GOOGLE_API_KEY not set in environment or Streamlit secrets.")
+          else:
+            with st.spinner("Calling Generative API..."):
+              url = "https://generativelanguage.googleapis.com/v1/models/text-bison-001:generate"
+              headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+              payload = {"prompt": {"text": "Say hello in one short sentence."}, "maxOutputTokens": 50}
+              try:
+                r = requests.post(url, headers=headers, json=payload, timeout=15)
+                st.write("Status:", r.status_code)
+                try:
+                  st.subheader("Response JSON")
+                  st.json(r.json())
+                except Exception:
+                  st.write("Non-JSON response:")
+                  st.text(r.text[:1000])
+              except Exception as e:
+                st.error(f"Request failed: {e}")
+
 
 def main() -> None:
     _configure_page()
@@ -263,30 +292,41 @@ def main() -> None:
             submit = st.form_submit_button("Solve →", use_container_width=True)
 
     if submit and user_input.strip():
-      if not os.getenv("GOOGLE_API_KEY"):
+      # Prefer Streamlit secrets (deployed) but fall back to environment variable.
+      token = os.getenv("GOOGLE_API_KEY")
+      try:
+        if not token and hasattr(st, "secrets"):
+          token = st.secrets.get("GOOGLE_API_KEY")
+      except Exception:
+        token = token
+
+      if not token:
         st.error("Set GOOGLE_API_KEY in Streamlit Cloud secrets or your shell before asking the agent to solve a problem.")
         return
 
-        user_msg = user_input.strip()
-        st.session_state.messages.append({"role": "user", "content": user_msg})
+      # Ensure downstream code can read the token from the environment
+      os.environ["GOOGLE_API_KEY"] = token
 
-        history = []
-        for m in st.session_state.messages[:-1]:
-            history.append({"role": m["role"], "content": m["content"]})
+      user_msg = user_input.strip()
+      st.session_state.messages.append({"role": "user", "content": user_msg})
 
-        with st.spinner("Reasoning through the problem..."):
-            result = run_agent(user_msg, history)
+      history = []
+      for m in st.session_state.messages[:-1]:
+        history.append({"role": m["role"], "content": m["content"]})
 
-        assistant_msg = result["response"]
-        msg_idx = len(st.session_state.messages)
+      with st.spinner("Reasoning through the problem..."):
+        result = run_agent(user_msg, history)
 
-        st.session_state.messages.append({"role": "assistant", "content": assistant_msg})
-        st.session_state.tool_logs[msg_idx] = result["tool_calls"]
+      assistant_msg = result["response"]
+      msg_idx = len(st.session_state.messages)
 
-        if result.get("error"):
-            st.error(f"Error: {result['error']}")
+      st.session_state.messages.append({"role": "assistant", "content": assistant_msg})
+      st.session_state.tool_logs[msg_idx] = result["tool_calls"]
 
-        st.rerun()
+      if result.get("error"):
+        st.error(f"Error: {result['error']}")
+
+      st.rerun()
 
 
 if __name__ == "__main__":
