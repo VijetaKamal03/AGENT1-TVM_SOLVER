@@ -263,9 +263,9 @@ def main() -> None:
             submit = st.form_submit_button("Solve →", use_container_width=True)
 
     if submit and user_input.strip():
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            st.error("Set ANTHROPIC_API_KEY in Streamlit Cloud secrets or your shell before asking the agent to solve a problem.")
-            return
+      if not os.getenv("GOOGLE_API_KEY"):
+        st.error("Set GOOGLE_API_KEY in Streamlit Cloud secrets or your shell before asking the agent to solve a problem.")
+        return
 
         user_msg = user_input.strip()
         st.session_state.messages.append({"role": "user", "content": user_msg})

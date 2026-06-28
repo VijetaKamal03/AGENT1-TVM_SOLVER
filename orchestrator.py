@@ -56,6 +56,13 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
             "error": str | None,
         }
     """
+    # Use the Google API key as the single configured key for this project.
+    # Map `GOOGLE_API_KEY` into `ANTHROPIC_API_KEY` so existing Anthropic client usage
+    # continues to work while the environment exposes only the Google key.
+    google_key = os.getenv("GOOGLE_API_KEY")
+    if not google_key:
+        raise RuntimeError("GOOGLE_API_KEY not set in environment")
+    os.environ["ANTHROPIC_API_KEY"] = google_key
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
     # Route to subagent

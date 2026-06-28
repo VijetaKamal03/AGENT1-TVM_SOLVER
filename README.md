@@ -17,7 +17,7 @@ A Streamlit-based financial mathematics assistant for Time Value of Money questi
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-$env:ANTHROPIC_API_KEY="your-key"
+$env:GOOGLE_API_KEY="your-key"
 streamlit run app.py
 ```
 
@@ -29,7 +29,7 @@ streamlit run app.py
 4. Add the following secret under Settings → Secrets:
 
 ```toml
-ANTHROPIC_API_KEY = "your-anthropic-key"
+GOOGLE_API_KEY = "your-google-key"
 ```
 
 ## Running tests
