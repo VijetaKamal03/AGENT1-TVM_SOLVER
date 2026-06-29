@@ -56,26 +56,31 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
             "error": str | None,
         }
     """
-    # Use the Google Generative API (Gemini / text-bison) directly with a Bearer token.
+    # Use the Google Generative API (Gemini) directly with an API key.
     token = os.getenv("GOOGLE_API_KEY")
     if not token:
         return {"response": "", "tool_calls": [], "error": "GOOGLE_API_KEY not set"}
 
     system_prompt = TVM_SYSTEM_PROMPT
-    # Build a single prompt text from system + history + user message
+    # Build messages in the correct format for Gemini API
     messages = conversation_history + [{"role": "user", "content": user_message}]
-    prompt_parts = ["SYSTEM: " + system_prompt]
-    for m in messages:
-        role = m.get("role", "user").upper()
-        content = m.get("content", "")
-        prompt_parts.append(f"{role}: {content}")
-    prompt_text = "\n\n".join(prompt_parts)
 
-    url = "https://generativelanguage.googleapis.com/v1/models/text-bison-001:generate"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={token}"
     payload = {
-        "prompt": {"text": prompt_text},
-        "maxOutputTokens": 768,
-        "temperature": 0.2,
+        "system_instruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "contents": [
+            {
+                "role": m.get("role", "user"),
+                "parts": [{"text": m.get("content", "")}]
+            }
+            for m in messages
+        ],
+        "generation_config": {
+            "maxOutputTokens": MAX_TOKENS,
+            "temperature": 0.2,
+        },
     }
 
     def _extract_text_from_response(resp):
@@ -83,54 +88,30 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
             data = resp.json()
         except Exception:
             return None, f"Non-JSON response (status {resp.status_code}): {resp.text}"
+        
+        # Gemini API response format
         candidates = data.get("candidates") or []
         if candidates:
-            # Newer Generative API returns candidate.output or candidate.content
             first = candidates[0]
-            text = first.get("output") or first.get("content") or first.get("text")
-            if isinstance(text, dict):
-                # some responses nest text
-                text = text.get("text") or text.get("content") or str(text)
-            return (text or ""), None
-        # fallback keys
-        if "output" in data and isinstance(data.get("output"), str):
-            return data.get("output"), None
-        return None, f"No text candidate in JSON response: keys={list(data.keys())}"
+            content = first.get("content", {})
+            parts = content.get("parts", [])
+            if parts:
+                text = parts[0].get("text")
+                return text or "", None
+        
+        return None, f"No text candidate in JSON response: {data}"
 
-    # Decide whether token looks like an OAuth access token (starts with AQ.)
-    looks_like_oauth = isinstance(token, str) and token.startswith("AQ.")
-
-    # Try appropriate method(s)
-    # 1. If looks like OAuth, try Bearer header first; otherwise try API key query param first.
-    methods = []
-    if looks_like_oauth:
-        methods = ["bearer", "key"]
-    else:
-        methods = ["key", "bearer"]
-
-    last_error = None
-    for method in methods:
-        try:
-            if method == "bearer":
-                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            else:
-                # API key as query param
-                resp = requests.post(url, params={"key": token}, json=payload, timeout=30)
-
-            if resp.status_code == 200:
-                text, extract_err = _extract_text_from_response(resp)
-                if extract_err:
-                    return {"response": "", "tool_calls": [], "error": extract_err}
-                return {"response": text, "tool_calls": [], "error": None}
-            else:
-                # Record error and try next method
-                last_error = f"method={method} status={resp.status_code} body={resp.text}"
-                # If 404 or 401, continue to fallback; otherwise keep trying other method
-                continue
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    # All methods exhausted
-    return {"response": "", "tool_calls": [], "error": last_error or "Unknown error"}
+    # Make the API request
+    try:
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if resp.status_code == 200:
+            text, extract_err = _extract_text_from_response(resp)
+            if extract_err:
+                return {"response": "", "tool_calls": [], "error": extract_err}
+            return {"response": text, "tool_calls": [], "error": None}
+        else:
+            return {"response": "", "tool_calls": [], "error": f"API returned status {resp.status_code}: {resp.text}"}
+    except Exception as e:
+        return {"response": "", "tool_calls": [], "error": str(e)}
