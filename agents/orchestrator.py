@@ -63,20 +63,26 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
 
     system_prompt = TVM_SYSTEM_PROMPT
     # Build messages in the correct format for Gemini API
+    # Gemini API requires alternating "user" / "model" roles
     messages = conversation_history + [{"role": "user", "content": user_message}]
+    
+    # Convert "assistant" role to "model" for Gemini compatibility
+    formatted_messages = []
+    for m in messages:
+        role = m.get("role", "user")
+        if role == "assistant":
+            role = "model"
+        formatted_messages.append({
+            "role": role,
+            "parts": [{"text": m.get("content", "")}]
+        })
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={token}"
     payload = {
         "system_instruction": {
             "parts": [{"text": system_prompt}]
         },
-        "contents": [
-            {
-                "role": m.get("role", "user"),
-                "parts": [{"text": m.get("content", "")}]
-            }
-            for m in messages
-        ],
+        "contents": formatted_messages,
         "generation_config": {
             "maxOutputTokens": MAX_TOKENS,
             "temperature": 0.2,
@@ -86,20 +92,32 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
     def _extract_text_from_response(resp):
         try:
             data = resp.json()
-        except Exception:
+        except Exception as e:
             return None, f"Non-JSON response (status {resp.status_code}): {resp.text}"
+        
+        # Debug: check for API errors in response
+        if "error" in data:
+            error_msg = data.get("error", {}).get("message", "Unknown API error")
+            return None, f"API error: {error_msg}"
         
         # Gemini API response format
         candidates = data.get("candidates") or []
-        if candidates:
-            first = candidates[0]
-            content = first.get("content", {})
-            parts = content.get("parts", [])
-            if parts:
-                text = parts[0].get("text")
-                return text or "", None
+        if not candidates:
+            return None, f"No candidates in response. Full response: {json.dumps(data, indent=2)}"
         
-        return None, f"No text candidate in JSON response: {data}"
+        first = candidates[0]
+        content = first.get("content", {})
+        parts = content.get("parts", [])
+        
+        if not parts:
+            return None, f"No parts in candidate. Candidate: {json.dumps(first, indent=2)}"
+        
+        text = parts[0].get("text", "").strip()
+        
+        if not text:
+            return None, f"Empty text in response. Part: {json.dumps(parts[0], indent=2)}"
+        
+        return text, None
 
     # Make the API request
     try:
@@ -109,9 +127,18 @@ def run_agent(user_message: str, conversation_history: list[dict]) -> dict:
         if resp.status_code == 200:
             text, extract_err = _extract_text_from_response(resp)
             if extract_err:
+                print(f"[ORCHESTRATOR] Extraction error: {extract_err}", file=__import__('sys').stderr)
                 return {"response": "", "tool_calls": [], "error": extract_err}
+            if not text:
+                err_msg = "Empty response from API (no error but no text)"
+                print(f"[ORCHESTRATOR] {err_msg}", file=__import__('sys').stderr)
+                return {"response": "", "tool_calls": [], "error": err_msg}
             return {"response": text, "tool_calls": [], "error": None}
         else:
-            return {"response": "", "tool_calls": [], "error": f"API returned status {resp.status_code}: {resp.text}"}
+            err_msg = f"API returned status {resp.status_code}: {resp.text}"
+            print(f"[ORCHESTRATOR] {err_msg}", file=__import__('sys').stderr)
+            return {"response": "", "tool_calls": [], "error": err_msg}
     except Exception as e:
-        return {"response": "", "tool_calls": [], "error": str(e)}
+        err_msg = f"Request exception: {str(e)}"
+        print(f"[ORCHESTRATOR] {err_msg}", file=__import__('sys').stderr)
+        return {"response": "", "tool_calls": [], "error": err_msg}
