@@ -20,7 +20,7 @@ from tools.tool_registry import TOOLS, dispatch_tool
 from agents.tvm_subagent import SYSTEM_PROMPT as TVM_SYSTEM_PROMPT
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MODEL = "claude-sonnet-4-6"
+MODEL = "gemini-2.5-flash"
 MAX_TOKENS = 4096
 MAX_TOOL_ROUNDS = 10   # safety ceiling on the agentic loop
 
